@@ -12,35 +12,35 @@ pub const DEFAULT_KERNEL_TUNING: KernelTuning = KernelTuning {
     prune_check_start: 24,
 };
 
-const INITIAL_ARR: [u8; N] = [
+pub(super) const INITIAL_ARR: [u8; N] = [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
     25,
 ];
 
-const THRESHOLD_2: u32 = threshold(2);
-const THRESHOLD_3: u32 = threshold(3);
-const THRESHOLD_4: u32 = threshold(4);
-const THRESHOLD_5: u32 = threshold(5);
-const THRESHOLD_6: u32 = threshold(6);
-const THRESHOLD_7: u32 = threshold(7);
-const THRESHOLD_8: u32 = threshold(8);
-const THRESHOLD_9: u32 = threshold(9);
-const THRESHOLD_10: u32 = threshold(10);
-const THRESHOLD_11: u32 = threshold(11);
-const THRESHOLD_12: u32 = threshold(12);
-const THRESHOLD_13: u32 = threshold(13);
-const THRESHOLD_14: u32 = threshold(14);
-const THRESHOLD_15: u32 = threshold(15);
-const THRESHOLD_16: u32 = threshold(16);
-const THRESHOLD_17: u32 = threshold(17);
-const THRESHOLD_18: u32 = threshold(18);
-const THRESHOLD_19: u32 = threshold(19);
-const THRESHOLD_20: u32 = threshold(20);
-const THRESHOLD_21: u32 = threshold(21);
-const THRESHOLD_22: u32 = threshold(22);
-const THRESHOLD_23: u32 = threshold(23);
-const THRESHOLD_24: u32 = threshold(24);
-const THRESHOLD_25: u32 = threshold(25);
+pub(super) const THRESHOLD_2: u32 = threshold(2);
+pub(super) const THRESHOLD_3: u32 = threshold(3);
+pub(super) const THRESHOLD_4: u32 = threshold(4);
+pub(super) const THRESHOLD_5: u32 = threshold(5);
+pub(super) const THRESHOLD_6: u32 = threshold(6);
+pub(super) const THRESHOLD_7: u32 = threshold(7);
+pub(super) const THRESHOLD_8: u32 = threshold(8);
+pub(super) const THRESHOLD_9: u32 = threshold(9);
+pub(super) const THRESHOLD_10: u32 = threshold(10);
+pub(super) const THRESHOLD_11: u32 = threshold(11);
+pub(super) const THRESHOLD_12: u32 = threshold(12);
+pub(super) const THRESHOLD_13: u32 = threshold(13);
+pub(super) const THRESHOLD_14: u32 = threshold(14);
+pub(super) const THRESHOLD_15: u32 = threshold(15);
+pub(super) const THRESHOLD_16: u32 = threshold(16);
+pub(super) const THRESHOLD_17: u32 = threshold(17);
+pub(super) const THRESHOLD_18: u32 = threshold(18);
+pub(super) const THRESHOLD_19: u32 = threshold(19);
+pub(super) const THRESHOLD_20: u32 = threshold(20);
+pub(super) const THRESHOLD_21: u32 = threshold(21);
+pub(super) const THRESHOLD_22: u32 = threshold(22);
+pub(super) const THRESHOLD_23: u32 = threshold(23);
+pub(super) const THRESHOLD_24: u32 = threshold(24);
+pub(super) const THRESHOLD_25: u32 = threshold(25);
 
 #[derive(Clone, Debug)]
 pub struct RangeResult {
@@ -56,7 +56,11 @@ const fn threshold(max: u32) -> u32 {
 
 #[inline(always)]
 pub fn run_range(seed: u64, lo: u64, hi: u64) -> RangeResult {
-    run_range_with_tuning(seed, lo, hi, DEFAULT_KERNEL_TUNING)
+    // TODO: check support or something something blah blah
+    // also add a cli parameter
+    
+    // run_range_with_tuning(seed, lo, hi, DEFAULT_KERNEL_TUNING)
+    unsafe { crate::kernel_simd::run_range_simd(seed, lo, hi) }
 }
 
 pub fn run_range_with_tuning(seed: u64, lo: u64, hi: u64, tuning: KernelTuning) -> RangeResult {
@@ -131,7 +135,7 @@ fn splitmix64_step(z: &mut u64) -> u64 {
 }
 
 #[inline(always)]
-fn xseed(seed64: u64) -> [u32; 4] {
+pub(super) fn xseed(seed64: u64) -> [u32; 4] {
     let mut z = seed64;
     let a = splitmix64_step(&mut z);
     let b = splitmix64_step(&mut z);
@@ -173,7 +177,7 @@ fn xint(s: &mut [u32; 4], max: u32, threshold: u32) -> usize {
     loop {
         let value = xnext(s);
         if value >= threshold {
-            // This is astronomically unlikely but separating the cold path actually
+            // Missing this is astronomically unlikely but separating the cold path actually
             // worsens performance here
             return (value % max) as usize;
         }
@@ -216,9 +220,8 @@ fn shuffle_arr(arr: &mut [u8; N], state: &mut [u32; 4]) {
     swap_at(arr, 1, xint(state, 2, THRESHOLD_2));
 }
 
-#[cfg(test)]
 #[inline(always)]
-fn count_fixed_points(arr: &[u8; N]) -> u8 {
+pub(super) fn count_fixed_points(arr: &[u8; N]) -> u8 {
     (arr[0] == 1) as u8
         + (arr[1] == 2) as u8
         + (arr[2] == 3) as u8
@@ -275,7 +278,7 @@ impl SeedCursor {
 }
 
 #[inline(always)]
-fn materialize_arr(seed: u64, index: u64) -> [u8; N] {
+pub(super) fn materialize_arr(seed: u64, index: u64) -> [u8; N] {
     let mut state = xseed(seed.wrapping_add(index.wrapping_mul(SEED_STRIDE)));
     let mut arr = INITIAL_ARR;
     shuffle_arr(&mut arr, &mut state);
