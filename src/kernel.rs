@@ -1,6 +1,16 @@
+use serde::{Deserialize, Serialize};
+
 pub const N: usize = 25;
 pub const SEED_STRIDE: u64 = 0x9e37_79b9_7f4a_7c15;
-const LOW_BIT_MASK: u32 = (1u32 << N) - 1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct KernelTuning {
+    pub prune_check_start: u8,
+}
+
+pub const DEFAULT_KERNEL_TUNING: KernelTuning = KernelTuning {
+    prune_check_start: 24,
+};
 
 const INITIAL_ARR: [u8; N] = [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
@@ -46,6 +56,40 @@ const fn threshold(max: u32) -> u32 {
 
 #[inline(always)]
 pub fn run_range(seed: u64, lo: u64, hi: u64) -> RangeResult {
+    run_range_with_tuning(seed, lo, hi, DEFAULT_KERNEL_TUNING)
+}
+
+pub fn run_range_with_tuning(seed: u64, lo: u64, hi: u64, tuning: KernelTuning) -> RangeResult {
+    match tuning.prune_check_start.min(24) {
+        1 => run_range_impl::<1>(seed, lo, hi),
+        2 => run_range_impl::<2>(seed, lo, hi),
+        3 => run_range_impl::<3>(seed, lo, hi),
+        4 => run_range_impl::<4>(seed, lo, hi),
+        5 => run_range_impl::<5>(seed, lo, hi),
+        6 => run_range_impl::<6>(seed, lo, hi),
+        7 => run_range_impl::<7>(seed, lo, hi),
+        8 => run_range_impl::<8>(seed, lo, hi),
+        9 => run_range_impl::<9>(seed, lo, hi),
+        10 => run_range_impl::<10>(seed, lo, hi),
+        11 => run_range_impl::<11>(seed, lo, hi),
+        12 => run_range_impl::<12>(seed, lo, hi),
+        13 => run_range_impl::<13>(seed, lo, hi),
+        14 => run_range_impl::<14>(seed, lo, hi),
+        15 => run_range_impl::<15>(seed, lo, hi),
+        16 => run_range_impl::<16>(seed, lo, hi),
+        17 => run_range_impl::<17>(seed, lo, hi),
+        18 => run_range_impl::<18>(seed, lo, hi),
+        19 => run_range_impl::<19>(seed, lo, hi),
+        20 => run_range_impl::<20>(seed, lo, hi),
+        21 => run_range_impl::<21>(seed, lo, hi),
+        22 => run_range_impl::<22>(seed, lo, hi),
+        23 => run_range_impl::<23>(seed, lo, hi),
+        _ => run_range_impl::<24>(seed, lo, hi),
+    }
+}
+
+#[inline(always)]
+fn run_range_impl<const PRUNE_CHECK_START: u8>(seed: u64, lo: u64, hi: u64) -> RangeResult {
     if lo >= hi {
         return RangeResult {
             best_score: 0,
@@ -60,7 +104,7 @@ pub fn run_range(seed: u64, lo: u64, hi: u64) -> RangeResult {
 
     for it in lo..hi {
         let mut state = seed_cursor.current_state();
-        let correct = score_candidate(&mut state, best_score);
+        let correct = score_candidate::<PRUNE_CHECK_START>(&mut state, best_score);
         if correct > best_score {
             best_score = correct;
             best_index = it;
@@ -239,7 +283,7 @@ fn materialize_arr(seed: u64, index: u64) -> [u8; N] {
 }
 
 macro_rules! score_step {
-    ($state:expr, $foreign_hits:expr, $fixed:expr, $floor:expr, $idx:expr, $max:expr, $threshold:expr) => {{
+    ($state:expr, $foreign_hits:expr, $fixed:expr, $floor:expr, $idx:expr, $max:expr, $threshold:expr, $prune_from:expr) => {{
         let draw = xint($state, $max, $threshold);
         let idx_bit = 1u32 << $idx;
         if draw == $idx {
@@ -248,42 +292,44 @@ macro_rules! score_step {
             $foreign_hits |= 1u32 << draw;
         }
 
-        let remaining = ((!$foreign_hits) & ((1u32 << $idx) - 1) & LOW_BIT_MASK).count_ones() as u8;
-        if $fixed + remaining <= $floor {
-            return $floor;
+        if $idx <= $prune_from {
+            let remaining = ((!$foreign_hits) & ((1u32 << $idx) - 1)).count_ones() as u8;
+            if $fixed + remaining <= $floor {
+                return $floor;
+            }
         }
     }};
 }
 
 #[inline(always)]
-fn score_candidate(state: &mut [u32; 4], floor: u8) -> u8 {
+fn score_candidate<const PRUNE_CHECK_START: u8>(state: &mut [u32; 4], floor: u8) -> u8 {
     let mut foreign_hits = 0u32;
     let mut fixed = 0u8;
 
-    score_step!(state, foreign_hits, fixed, floor, 24, 25, THRESHOLD_25);
-    score_step!(state, foreign_hits, fixed, floor, 23, 24, THRESHOLD_24);
-    score_step!(state, foreign_hits, fixed, floor, 22, 23, THRESHOLD_23);
-    score_step!(state, foreign_hits, fixed, floor, 21, 22, THRESHOLD_22);
-    score_step!(state, foreign_hits, fixed, floor, 20, 21, THRESHOLD_21);
-    score_step!(state, foreign_hits, fixed, floor, 19, 20, THRESHOLD_20);
-    score_step!(state, foreign_hits, fixed, floor, 18, 19, THRESHOLD_19);
-    score_step!(state, foreign_hits, fixed, floor, 17, 18, THRESHOLD_18);
-    score_step!(state, foreign_hits, fixed, floor, 16, 17, THRESHOLD_17);
-    score_step!(state, foreign_hits, fixed, floor, 15, 16, THRESHOLD_16);
-    score_step!(state, foreign_hits, fixed, floor, 14, 15, THRESHOLD_15);
-    score_step!(state, foreign_hits, fixed, floor, 13, 14, THRESHOLD_14);
-    score_step!(state, foreign_hits, fixed, floor, 12, 13, THRESHOLD_13);
-    score_step!(state, foreign_hits, fixed, floor, 11, 12, THRESHOLD_12);
-    score_step!(state, foreign_hits, fixed, floor, 10, 11, THRESHOLD_11);
-    score_step!(state, foreign_hits, fixed, floor, 9, 10, THRESHOLD_10);
-    score_step!(state, foreign_hits, fixed, floor, 8, 9, THRESHOLD_9);
-    score_step!(state, foreign_hits, fixed, floor, 7, 8, THRESHOLD_8);
-    score_step!(state, foreign_hits, fixed, floor, 6, 7, THRESHOLD_7);
-    score_step!(state, foreign_hits, fixed, floor, 5, 6, THRESHOLD_6);
-    score_step!(state, foreign_hits, fixed, floor, 4, 5, THRESHOLD_5);
-    score_step!(state, foreign_hits, fixed, floor, 3, 4, THRESHOLD_4);
-    score_step!(state, foreign_hits, fixed, floor, 2, 3, THRESHOLD_3);
-    score_step!(state, foreign_hits, fixed, floor, 1, 2, THRESHOLD_2);
+    score_step!(state, foreign_hits, fixed, floor, 24, 25, THRESHOLD_25, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 23, 24, THRESHOLD_24, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 22, 23, THRESHOLD_23, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 21, 22, THRESHOLD_22, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 20, 21, THRESHOLD_21, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 19, 20, THRESHOLD_20, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 18, 19, THRESHOLD_19, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 17, 18, THRESHOLD_18, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 16, 17, THRESHOLD_17, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 15, 16, THRESHOLD_16, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 14, 15, THRESHOLD_15, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 13, 14, THRESHOLD_14, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 12, 13, THRESHOLD_13, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 11, 12, THRESHOLD_12, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 10, 11, THRESHOLD_11, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 9, 10, THRESHOLD_10, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 8, 9, THRESHOLD_9, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 7, 8, THRESHOLD_8, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 6, 7, THRESHOLD_7, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 5, 6, THRESHOLD_6, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 4, 5, THRESHOLD_5, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 3, 4, THRESHOLD_4, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 2, 3, THRESHOLD_3, PRUNE_CHECK_START);
+    score_step!(state, foreign_hits, fixed, floor, 1, 2, THRESHOLD_2, PRUNE_CHECK_START);
 
     fixed + ((foreign_hits & 1) == 0) as u8
 }
@@ -311,9 +357,49 @@ mod tests {
         let seed = 1_234_567_890_123_456_789u64;
         for index in 0..10_000u64 {
             let mut state = SeedCursor::new(seed, index).current_state();
-            let score = score_candidate(&mut state, 0);
+            let score = score_candidate::<24>(&mut state, 0);
             let arr = materialize_arr(seed, index);
             assert_eq!(score, count_fixed_points(&arr), "index={index}");
         }
+    }
+
+    #[test]
+    fn tuning_variants_preserve_output() {
+        let seed = 1_234_567_890_123_456_789u64;
+        let baseline = run_range_with_tuning(seed, 0, 50_000, KernelTuning { prune_check_start: 24 });
+        for prune_check_start in [24, 18, 16, 14, 13, 12, 10, 8, 1] {
+            let tuned = run_range_with_tuning(seed, 0, 50_000, KernelTuning { prune_check_start });
+            assert_eq!(tuned.best_score, baseline.best_score, "start={prune_check_start}");
+            assert_eq!(tuned.best_index, baseline.best_index, "start={prune_check_start}");
+            assert_eq!(tuned.best_arr, baseline.best_arr, "start={prune_check_start}");
+        }
+    }
+
+    #[test]
+    fn exhaustive_js_comparison() {
+        // compare our kernel to the one in scripts/js-sample.js for a range of inputs
+        let seed = 1_234_567_890_123_456_789u64;
+        let iterations = 100_000;
+
+        // Run the JavaScript implementation for comparison
+        let js_output = std::process::Command::new("node")
+            .arg("scripts/js-sample.js")
+            .arg(seed.to_string())
+            .arg(iterations.to_string())
+            .output()
+            .unwrap();
+        
+        // The JS output is formatted as { best: number, bestIndex: number, bestArr: number[] }
+        let js_result: serde_json::Value = serde_json::from_slice(&js_output.stdout).unwrap();
+
+        // Compare the results with our implementation
+        let our_result = run_range(seed, 0, iterations);
+
+        assert_eq!(our_result.best_score, js_result["best"].as_u64().unwrap() as u8);
+        assert_eq!(our_result.best_index, js_result["bestIndex"].as_u64().unwrap() as u64);
+        assert_eq!(our_result.best_arr.to_vec(), js_result["bestArr"]
+            .as_array().unwrap().iter()
+            .map(|v| v.as_u64().unwrap() as u8)
+            .collect::<Vec<_>>());
     }
 }

@@ -2,6 +2,9 @@
 
 const N = 25;
 
+const seed = process.argv[2] ? BigInt(process.argv[2]) : 1234567890123456789n;
+const iterations = process.argv[3] ? parseInt(process.argv[3]) : 1000;
+
 function splitmix64Step(zRef) {
   let z = (zRef.z + 0x9e3779b97f4a7c15n) & 0xffffffffffffffffn;
   zRef.z = z;
@@ -52,8 +55,8 @@ const arr = new Uint8Array(N);
 let best = -1;
 let bestArr = null;
 let bestIndex = 0;
-for (let it = 0; it < 1000; it++) {
-  const si = (1234567890123456789n + (BigInt(it) * 0x9e3779b97f4a7c15n)) & 0xffffffffffffffffn;
+for (let it = 0; it < iterations; it++) {
+  const si = (seed + (BigInt(it) * 0x9e3779b97f4a7c15n)) & 0xffffffffffffffffn;
   const st = xseed(si);
   for (let i = 0; i < N; i++) arr[i] = i + 1;
   for (let i = N - 1; i > 0; i--) {

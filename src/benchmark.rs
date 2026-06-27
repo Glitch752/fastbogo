@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::kernel::{N, RangeResult, run_range};
+use crate::kernel::{KernelTuning, N, RangeResult, run_range_with_tuning};
 
 #[derive(Clone, Debug)]
 pub struct BenchmarkConfig {
@@ -13,6 +13,7 @@ pub struct BenchmarkConfig {
     pub threads: usize,
     pub warmup_rounds: usize,
     pub measure_rounds: usize,
+    pub tuning: KernelTuning,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -29,6 +30,7 @@ pub struct BenchmarkSummary {
     pub seed: u64,
     pub count: u64,
     pub threads: usize,
+    pub prune_check_start: u8,
     pub warmup_rounds: usize,
     pub measure_rounds: usize,
     pub mean_shuffles_per_sec: f64,
@@ -38,15 +40,31 @@ pub struct BenchmarkSummary {
     pub rounds: Vec<BenchmarkRound>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct BenchmarkSweepCase {
+    pub threads: usize,
+    pub prune_check_start: u8,
+    pub summary: BenchmarkSummary,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BenchmarkSweepSummary {
+    pub seed: u64,
+    pub count: u64,
+    pub warmup_rounds: usize,
+    pub measure_rounds: usize,
+    pub cases: Vec<BenchmarkSweepCase>,
+}
+
 pub fn run_kernel_benchmark(config: &BenchmarkConfig) -> BenchmarkSummary {
     let threads = config.threads.max(1);
     for _ in 0..config.warmup_rounds {
-        let _ = run_benchmark_round(config.seed, config.count, threads);
+        let _ = run_benchmark_round(config.seed, config.count, threads, config.tuning);
     }
 
     let mut rounds = Vec::with_capacity(config.measure_rounds.max(1));
     for _ in 0..config.measure_rounds.max(1) {
-        rounds.push(run_benchmark_round(config.seed, config.count, threads));
+        rounds.push(run_benchmark_round(config.seed, config.count, threads, config.tuning));
     }
 
     let mut rates = rounds
@@ -63,6 +81,7 @@ pub fn run_kernel_benchmark(config: &BenchmarkConfig) -> BenchmarkSummary {
         seed: config.seed,
         count: config.count,
         threads,
+        prune_check_start: config.tuning.prune_check_start,
         warmup_rounds: config.warmup_rounds,
         measure_rounds: rounds.len(),
         mean_shuffles_per_sec: mean,
@@ -73,7 +92,51 @@ pub fn run_kernel_benchmark(config: &BenchmarkConfig) -> BenchmarkSummary {
     }
 }
 
-fn run_benchmark_round(seed: u64, count: u64, threads: usize) -> BenchmarkRound {
+pub fn run_kernel_benchmark_sweep(
+    base: &BenchmarkConfig,
+    thread_values: &[usize],
+    prune_values: &[u8],
+) -> BenchmarkSweepSummary {
+    let threads = if thread_values.is_empty() {
+        vec![base.threads]
+    } else {
+        thread_values.to_vec()
+    };
+    let prune_values = if prune_values.is_empty() {
+        vec![base.tuning.prune_check_start]
+    } else {
+        prune_values.to_vec()
+    };
+
+    let mut cases = Vec::with_capacity(threads.len() * prune_values.len());
+    for &thread_count in &threads {
+        for &prune_check_start in &prune_values {
+            let config = BenchmarkConfig {
+                seed: base.seed,
+                count: base.count,
+                threads: thread_count,
+                warmup_rounds: base.warmup_rounds,
+                measure_rounds: base.measure_rounds,
+                tuning: KernelTuning { prune_check_start },
+            };
+            cases.push(BenchmarkSweepCase {
+                threads: thread_count,
+                prune_check_start,
+                summary: run_kernel_benchmark(&config),
+            });
+        }
+    }
+
+    BenchmarkSweepSummary {
+        seed: base.seed,
+        count: base.count,
+        warmup_rounds: base.warmup_rounds,
+        measure_rounds: base.measure_rounds,
+        cases,
+    }
+}
+
+fn run_benchmark_round(seed: u64, count: u64, threads: usize, tuning: KernelTuning) -> BenchmarkRound {
     let ready = Arc::new(Barrier::new(threads + 1));
     let go = Arc::new(AtomicBool::new(false));
 
@@ -90,7 +153,7 @@ fn run_benchmark_round(seed: u64, count: u64, threads: usize) -> BenchmarkRound 
                 while !go.load(Ordering::Acquire) {
                     std::hint::spin_loop();
                 }
-                run_range(seed, lo, hi)
+                run_range_with_tuning(seed, lo, hi, tuning)
             }));
         }
 

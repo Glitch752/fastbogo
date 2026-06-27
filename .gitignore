@@ -2,3 +2,4 @@
 .env
 /reference
 /scripts/deploy.sh
+kernel_tuning.json

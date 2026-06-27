@@ -37,7 +37,7 @@ PGO (Profile Guided Optimization) can be used to optimize the performance of the
 cargo run --release -- --benchmark --count 1000000000 --benchmark-warmup-rounds 1 --benchmark-rounds 3
 
 # Store initial profiling data
-BENCH_COUNT=100000000 BENCH_WARMUP=1 BENCH_ROUNDS=5 ./scripts/pgo-generate.sh
+BENCH_COUNT=100000000 BENCH_WARMUP=1 BENCH_ROUNDS=4 ./scripts/pgo-generate.sh
 
 # Use the generated profiling data to optimize the client
 ./scripts/pgo-build.sh
@@ -45,3 +45,21 @@ BENCH_COUNT=100000000 BENCH_WARMUP=1 BENCH_ROUNDS=5 ./scripts/pgo-generate.sh
 # Check optimized performance
 cargo run --release -- --benchmark --count 100000000 --benchmark-warmup-rounds 1 --benchmark-rounds 3
 ```
+
+### Tuning
+There are a few important parameters to be tuned to optimize the client's performance:
+- threads (`--threads`)
+- prune threshold (`--prune-check-start`)
+
+these can be found using the benchmark:
+```
+cargo run --release -- --benchmark \
+  --count 50000000 \
+  --benchmark-warmup-rounds 1 \
+  --benchmark-rounds 5 \
+  --benchmark-thread-sweep 8,12,16 \
+  --benchmark-prune-sweep 16,15,14,13,12
+```
+(of course, with the appropriate thread sweep parameters for your system. somewhere between the number of physical cores and logical cores is typically ideal)
+
+The prune parameters will be saved to a JSON file on the system and loaded if not explicitly supplied. Make sure to re-run PGO with the tuned parameters!

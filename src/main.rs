@@ -8,8 +8,13 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use dotenvy::dotenv;
 use futures_util::{SinkExt, StreamExt};
-use fastbogo::benchmark::{BenchmarkConfig, BenchmarkSummary, run_kernel_benchmark};
-use fastbogo::kernel::{N, RangeResult, run_range};
+use fastbogo::benchmark::{
+    BenchmarkConfig, BenchmarkSummary, BenchmarkSweepSummary, run_kernel_benchmark,
+    run_kernel_benchmark_sweep,
+};
+use fastbogo::kernel::{
+    DEFAULT_KERNEL_TUNING, KernelTuning, N, RangeResult, run_range, run_range_with_tuning,
+};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -26,6 +31,7 @@ const MIN_REPORT_DELAY_MS: u64 = 900;
 const WORK_CHUNK: u64 = 8_000_000;
 const DEFAULT_OFFLINE_SEED: u64 = 1;
 const DEFAULT_OFFLINE_COUNT: u64 = 100_000_000;
+const KERNEL_TUNING_FILE: &str = "kernel_tuning.json";
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about)]
@@ -41,6 +47,9 @@ struct Cli {
 
     #[arg(long, help = "Override worker thread count; defaults to logical core count")]
     threads: Option<usize>,
+
+    #[arg(long, help = "Begin prune checks at this Fisher-Yates step. Usually 12-14.")]
+    prune_check_start: Option<u8>,
 
     #[arg(long, help = "Offline seed to process")]
     seed: Option<u64>,
@@ -62,6 +71,12 @@ struct Cli {
 
     #[arg(long, help = "Emit benchmark output as JSON")]
     benchmark_json: bool,
+
+    #[arg(long, help = "Comma-separated thread counts to benchmark, e.g. 26,39,52")]
+    benchmark_thread_sweep: Option<String>,
+
+    #[arg(long, help = "Comma-separated prune-check starts to benchmark, e.g. 24,18,16,14,13,12")]
+    benchmark_prune_sweep: Option<String>
 }
 
 #[derive(Clone, Debug)]
@@ -77,6 +92,7 @@ struct WorkerAssignment {
     seed: u64,
     lo: u64,
     hi: u64,
+    tuning: KernelTuning,
 }
 
 #[derive(Clone, Debug)]
@@ -111,6 +127,7 @@ struct WorkerPool {
     controls: Vec<Arc<WorkerControl>>,
     handles: Vec<JoinHandle<()>>,
     workers: usize,
+    worker_tuning: KernelTuning,
 }
 
 #[derive(Clone, Debug)]
@@ -258,9 +275,24 @@ async fn main() -> Result<()> {
 
     let state = Arc::new(Mutex::new(SharedState::new(worker_count, if cli.offline { "offline" } else { "online" })));
     let (worker_tx, worker_rx) = mpsc::unbounded_channel();
-    let pool = WorkerPool::new(worker_count, worker_tx);
+
+    let saved_tuning = std::fs::read_to_string(KERNEL_TUNING_FILE)
+        .ok()
+        .and_then(|s| serde_json::from_str::<KernelTuning>(&s).ok());
+
+    let pool = WorkerPool::new(
+        worker_count,
+        worker_tx,
+        KernelTuning {
+            prune_check_start: cli.prune_check_start
+                .or_else(|| saved_tuning.map(|t| t.prune_check_start))
+                .unwrap_or(DEFAULT_KERNEL_TUNING.prune_check_start)
+        },
+    );
     let status_handle = spawn_status_reporter(Arc::clone(&state));
     let control_handle = spawn_version_poller(client.clone(), cli.base_url.clone());
+
+    println!("Starting worker pool with {} threads and tuning {:?}", worker_count, pool.tuning());
 
     let result = if cli.offline {
         run_offline(cli.clone(), Arc::clone(&state), pool, worker_rx, control_handle).await
@@ -634,14 +666,25 @@ fn load_auth() -> Result<AuthConfig> {
 }
 
 impl WorkerPool {
-    fn new(workers: usize, progress_tx: mpsc::UnboundedSender<WorkerProgress>) -> Self {
+    fn new(
+        workers: usize,
+        progress_tx: mpsc::UnboundedSender<WorkerProgress>,
+        tuning: KernelTuning,
+    ) -> Self {
+        let cores = core_affinity::get_core_ids().unwrap();
+        // Wrapping allocation of workers to cores (e.g. for 2 cores and 4 workers: 0, 1, 0, 1)
+        let core_ids = cores.into_iter().cycle();
+        
         let mut controls = Vec::with_capacity(workers);
         let mut handles = Vec::with_capacity(workers);
-        for _idx in 0..workers {
+        for core_id in core_ids.take(workers) {
             let control = Arc::new(WorkerControl::new());
             let thread_control = Arc::clone(&control);
             let thread_tx = progress_tx.clone();
-            let handle = thread::spawn(move || worker_loop(thread_control, thread_tx));
+            let handle = thread::spawn(move || {
+                core_affinity::set_for_current(core_id);
+                worker_loop(thread_control, thread_tx, tuning)
+            });
             controls.push(control);
             handles.push(handle);
         }
@@ -649,6 +692,7 @@ impl WorkerPool {
             controls,
             handles,
             workers,
+            worker_tuning: tuning,
         }
     }
 
@@ -656,8 +700,18 @@ impl WorkerPool {
         for (idx, control) in self.controls.iter().enumerate() {
             let lo = ((idx as u128 * count as u128) / self.workers as u128) as u64;
             let hi = ((((idx + 1) as u128) * count as u128) / self.workers as u128) as u64;
-            control.assign(WorkerAssignment { lease_id, seed, lo, hi });
+            control.assign(WorkerAssignment {
+                lease_id,
+                seed,
+                lo,
+                hi,
+                tuning: self.tuning(),
+            });
         }
+    }
+
+    fn tuning(&self) -> KernelTuning {
+        self.worker_tuning
     }
 
     fn shutdown(&mut self) {
@@ -713,7 +767,11 @@ impl WorkerControl {
     }
 }
 
-fn worker_loop(control: Arc<WorkerControl>, progress_tx: mpsc::UnboundedSender<WorkerProgress>) {
+fn worker_loop(
+    control: Arc<WorkerControl>,
+    progress_tx: mpsc::UnboundedSender<WorkerProgress>,
+    fallback_tuning: KernelTuning,
+) {
     let mut generation = 0;
     while let Some((new_generation, assignment)) = control.wait_for_assignment(generation) {
         generation = new_generation;
@@ -721,12 +779,22 @@ fn worker_loop(control: Arc<WorkerControl>, progress_tx: mpsc::UnboundedSender<W
         let mut pending_done = 0u64;
         let mut pending_best: Option<BestCandidate> = None;
         let mut last_flush = Instant::now();
+        let tuning = assignment.tuning;
         while cur < assignment.hi {
             if control.should_abort(generation) {
                 break;
             }
             let hi = assignment.hi.min(cur.saturating_add(WORK_CHUNK));
-            let chunk = run_range(assignment.seed, cur, hi);
+            let chunk = run_range_with_tuning(
+                assignment.seed,
+                cur,
+                hi,
+                if tuning.prune_check_start == 0 {
+                    fallback_tuning
+                } else {
+                    tuning
+                },
+            );
             pending_done = pending_done.saturating_add(hi - cur);
             merge_best(
                 &mut pending_best,
@@ -768,13 +836,46 @@ impl From<&RangeResult> for SampleOutput {
 }
 
 fn run_benchmark_mode(cli: &Cli) -> Result<()> {
-    let summary = run_kernel_benchmark(&BenchmarkConfig {
+    let kernel_tuning = if let Ok(tuning) = std::fs::read_to_string(KERNEL_TUNING_FILE) {
+        serde_json::from_str(&tuning).unwrap_or(DEFAULT_KERNEL_TUNING)
+    } else {
+        DEFAULT_KERNEL_TUNING
+    };
+
+    let base_config = BenchmarkConfig {
         seed: cli.seed.unwrap_or(DEFAULT_OFFLINE_SEED),
         count: cli.count.unwrap_or(DEFAULT_OFFLINE_COUNT),
         threads: cli.threads.unwrap_or_else(default_worker_count),
         warmup_rounds: cli.benchmark_warmup_rounds,
         measure_rounds: cli.benchmark_rounds,
-    });
+        tuning: kernel_tuning,
+    };
+
+    let thread_sweep = parse_number_list::<usize>(cli.benchmark_thread_sweep.as_deref())?;
+    let prune_sweep = parse_number_list::<u8>(cli.benchmark_prune_sweep.as_deref())?;
+
+    if !thread_sweep.is_empty() || !prune_sweep.is_empty() {
+        let summary = run_kernel_benchmark_sweep(&base_config, &thread_sweep, &prune_sweep);
+        if cli.benchmark_json {
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        } else {
+            print_benchmark_sweep_summary(&summary);
+        }
+
+        // Find the best configuration and save it to a file
+        let best_case = summary.cases.iter().max_by(|a, b|
+            a.summary.mean_shuffles_per_sec.total_cmp(&b.summary.mean_shuffles_per_sec)
+        ).unwrap();
+        let best_config = KernelTuning {
+            prune_check_start: best_case.prune_check_start,
+        };
+        std::fs::write(KERNEL_TUNING_FILE, serde_json::to_string_pretty(&best_config)?).unwrap();
+        println!("Best configuration saved to {}: {:?} (with {} threads)", KERNEL_TUNING_FILE, best_config, best_case.threads);
+        
+        return Ok(());
+    }
+
+    let summary = run_kernel_benchmark(&base_config);
 
     if cli.benchmark_json {
         println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -786,10 +887,11 @@ fn run_benchmark_mode(cli: &Cli) -> Result<()> {
 
 fn print_benchmark_summary(summary: &BenchmarkSummary) {
     println!(
-        "benchmark seed={} count={} threads={} warmup={} rounds={}",
+        "benchmark seed={} count={} threads={} prune_check_start={} warmup={} rounds={}",
         summary.seed,
         summary.count,
         summary.threads,
+        summary.prune_check_start,
         summary.warmup_rounds,
         summary.measure_rounds,
     );
@@ -810,6 +912,44 @@ fn print_benchmark_summary(summary: &BenchmarkSummary) {
         summary.best_shuffles_per_sec / 1_000_000.0,
         summary.worst_shuffles_per_sec / 1_000_000.0,
     );
+}
+
+fn print_benchmark_sweep_summary(summary: &BenchmarkSweepSummary) {
+    println!(
+        "benchmark sweep seed={} count={} warmup={} rounds={}",
+        summary.seed,
+        summary.count,
+        summary.warmup_rounds,
+        summary.measure_rounds,
+    );
+    for case in &summary.cases {
+        println!(
+            "threads={} prune_check_start={} mean={:.3} M/s median={:.3} M/s best={:.3} M/s worst={:.3} M/s",
+            case.threads,
+            case.prune_check_start,
+            case.summary.mean_shuffles_per_sec / 1_000_000.0,
+            case.summary.median_shuffles_per_sec / 1_000_000.0,
+            case.summary.best_shuffles_per_sec / 1_000_000.0,
+            case.summary.worst_shuffles_per_sec / 1_000_000.0,
+        );
+    }
+}
+
+fn parse_number_list<T>(value: Option<&str>) -> Result<Vec<T>>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| item.parse::<T>().map_err(|err| anyhow::anyhow!("invalid list value `{item}`: {err}")))
+        .collect()
 }
 
 fn merge_best(slot: &mut Option<BestCandidate>, candidate: BestCandidate) {
@@ -884,11 +1024,10 @@ impl fmt::Display for StatusSnapshot {
             };
             write!(
                 f,
-                "mode={} connected={} welcome={} workers={} rate={:.3} M/s session={} lifetime={} best={} seed={} progress={:.3}% ({}/{})",
+                "mode={} connected={} welcome={} rate={:.3} M/s session={} lifetime={} best={} seed={} progress={:.3}% ({}/{})",
                 self.mode,
                 self.connected,
                 self.received_welcome,
-                self.workers,
                 self.rate / 1_000_000.0,
                 self.session_credited,
                 self.lifetime_shuffles,
@@ -905,11 +1044,10 @@ impl fmt::Display for StatusSnapshot {
         } else {
             write!(
                 f,
-                "mode={} connected={} welcome={} workers={} rate={:.3} M/s session={} lifetime={} best={} waiting_for_lease=true",
+                "mode={} connected={} welcome={} rate={:.3} M/s session={} lifetime={} best={} waiting_for_lease=true",
                 self.mode,
                 self.connected,
                 self.received_welcome,
-                self.workers,
                 self.rate / 1_000_000.0,
                 self.session_credited,
                 self.lifetime_shuffles,
