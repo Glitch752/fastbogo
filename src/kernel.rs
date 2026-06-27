@@ -109,9 +109,7 @@ fn run_range_impl<const PRUNE_CHECK_START: u8>(seed: u64, lo: u64, hi: u64) -> R
             best_score = correct;
             best_index = it;
         }
-        if it + 1 != hi {
-            seed_cursor.advance();
-        }
+        seed_cursor.advance();
     }
 
     let best_arr = materialize_arr(seed, best_index);
@@ -175,6 +173,8 @@ fn xint(s: &mut [u32; 4], max: u32, threshold: u32) -> usize {
     loop {
         let value = xnext(s);
         if value >= threshold {
+            // This is astronomically unlikely but separating the cold path actually
+            // worsens performance here
             return (value % max) as usize;
         }
     }
@@ -286,6 +286,7 @@ macro_rules! score_step {
     ($state:expr, $foreign_hits:expr, $fixed:expr, $floor:expr, $idx:expr, $max:expr, $threshold:expr, $prune_from:expr) => {{
         let draw = xint($state, $max, $threshold);
         let idx_bit = 1u32 << $idx;
+        // you'd think branchless would be better here, but it's not
         if draw == $idx {
             $fixed += (($foreign_hits & idx_bit) == 0) as u8;
         } else {

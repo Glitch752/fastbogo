@@ -584,7 +584,7 @@ fn snapshot_state(state: &Arc<Mutex<SharedState>>) -> StatusSnapshot {
 
 fn print_offline_summary(snapshot: &StatusSnapshot) {
     println!(
-        "offline complete workers={} rate={:.3} M/s best={} done={}",
+        "offline complete workers={} rate(10s)={:.3} M/s best={} done={}",
         snapshot.workers,
         snapshot.rate / 1_000_000.0,
         snapshot.lease.as_ref().and_then(|lease| lease.best.as_ref().map(|best| best.score)).unwrap_or(0),
@@ -961,7 +961,7 @@ fn merge_best(slot: &mut Option<BestCandidate>, candidate: BestCandidate) {
 fn trim_recent_counts(recent_counts: &mut VecDeque<(Instant, u64)>, now: Instant) {
     while recent_counts
         .front()
-        .is_some_and(|(ts, _)| now.duration_since(*ts) > Duration::from_secs(3))
+        .is_some_and(|(ts, _)| now.duration_since(*ts) > Duration::from_secs(10))
     {
         recent_counts.pop_front();
     }
@@ -1024,10 +1024,10 @@ impl fmt::Display for StatusSnapshot {
             };
             write!(
                 f,
-                "mode={} connected={} welcome={} rate={:.3} M/s session={} lifetime={} best={} seed={} progress={:.3}% ({}/{})",
+                "mode={} {} {} rate(10s)={:.3} M/s session={} lifetime={} best={} seed={} progress={:.3}% ({}/{})",
                 self.mode,
-                self.connected,
-                self.received_welcome,
+                if self.connected { "connected" } else { "" },
+                if self.received_welcome { "welcome" } else { "" },
                 self.rate / 1_000_000.0,
                 self.session_credited,
                 self.lifetime_shuffles,
@@ -1044,10 +1044,10 @@ impl fmt::Display for StatusSnapshot {
         } else {
             write!(
                 f,
-                "mode={} connected={} welcome={} rate={:.3} M/s session={} lifetime={} best={} waiting_for_lease=true",
+                "mode={} {} {} rate(10s)={:.3} M/s session={} lifetime={} best={} waiting_for_lease=true",
                 self.mode,
-                self.connected,
-                self.received_welcome,
+                if self.connected { "connected" } else { "" },
+                if self.received_welcome { "welcome" } else { "" },
                 self.rate / 1_000_000.0,
                 self.session_credited,
                 self.lifetime_shuffles,
