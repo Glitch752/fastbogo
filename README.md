@@ -2,14 +2,13 @@
 
 A very fast Rust CPU client for [bogo.swapjs.dev](https://bogo.swapjs.dev).
 
-There are two versions of the kernel itself: a scalar version and a vectorized AVX2 version. The AVX2 version is only marginally faster than the scalar version (quite the testament to the efficiency of CPU schedulers!) but can achieve upwards of 180 cycles per permutation (orchestration amortized).
+There are two versions of the kernel itself: a scalar version and a vectorized AVX2 version. The AVX2 version is only marginally faster than the scalar version (quite the testament to the efficiency of CPU schedulers!) but can achieve upwards of 125 cycles per permutation (orchestration amortized) on modern Intel CPUs.
 
 ## Installation
 Building normally is easy:
 ```bash
 git clone https://github.com/Glitch752/fastbogo
 cd fastbogo
-cargo build --release
 ```
 
 Set up a .env file with `BOGO_UUID`, `BOGO_NICK`, and `BOGO_CODE` values, then run:
@@ -32,8 +31,9 @@ cargo run --release -- --benchmark --count 1000000000 --benchmark-warmup-rounds 
 ### PGO
 PGO (Profile Guided Optimization) can be used to optimize the performance of the client by providing runtime information to the compiler. The benchmarking mode is used by a few helper scripts to make PGO straightforward.
 
+On linux:
 ```bash
-# Validate base performance
+# Validate base performance (optional)
 cargo run --release -- --benchmark --count 1000000000 --benchmark-warmup-rounds 1 --benchmark-rounds 3
 
 # Store initial profiling data. Tune count based on your system performance
@@ -42,8 +42,23 @@ BENCH_COUNT=100000000 BENCH_WARMUP=1 BENCH_ROUNDS=4 ./scripts/pgo-generate.sh
 # Use the generated profiling data to optimize the client
 ./scripts/pgo-build.sh
 
-# Check optimized performance
-cargo run --release -- --benchmark --count 100000000 --benchmark-warmup-rounds 1 --benchmark-rounds 3
+# Check optimized performance (optional)
+cargo run --release -- --benchmark --count 1000000000 --benchmark-warmup-rounds 1 --benchmark-rounds 3
+```
+
+Or on Windows:
+```powershell
+# Validate base performance (optional)
+cargo run --release -- --benchmark --count 1000000000 --benchmark-warmup-rounds 1 --benchmark-rounds 3
+
+# Store initial profiling data. Tune count based on your system performance
+$env:BENCH_COUNT = "100000000"; $env:BENCH_WARMUP = "1"; $env:BENCH_ROUNDS = "4"; ./scripts/pgo-generate.ps1
+
+# Use the generated profiling data to optimize the client
+./scripts/pgo-build.ps1
+
+# Check optimized performance (optional)
+cargo run --release -- --benchmark --count 1000000000 --benchmark-warmup-rounds 1 --benchmark-rounds 3
 ```
 
 ### Tuning
@@ -68,4 +83,4 @@ The prune parameters will be saved to a JSON file on the system and loaded if no
 
 Admittedly, this project is a bit of a mess and partially made with AI assistance (though I wrote the kernel code, which was the interesting part to me). It's mostly an experiment and for my own learning.
 
-This wouldn't be possible without the amazing work of [Mafiosoweb1's bogo-turbo](https://github.com/Mafiosoweb1/bogo-turbo/), a GPU implementation inspiring many of the optimizations used here.
+This wouldn't be possible without the amazing work of [Mafiosoweb1's bogo-turbo](https://github.com/Mafiosoweb1/bogo-turbo/), a GPU implementation inspiring many of the optimizations used here. If you want to bogo sort _really_ fast, GPU implementations are the way to go.
