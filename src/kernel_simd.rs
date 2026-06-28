@@ -43,6 +43,7 @@ unsafe fn xnext8(rng: &mut Xoshiro8) -> __m256i {
 
 /// computes `n % D` for 8 packed 32-bit integers since avx2 doesn't have a native modulo operation
 /// uses the algorithm found in "Division by Invariant Integers using Multiplication" by T. Granlund and P. L. Montgomery.
+/// this is probably the most intensive part of the code, but I don't have a much better idea for how to do it.
 #[inline(always)]
 pub unsafe fn fast_mod_avx2<const D: u32>(a: __m256i) -> __m256i 
     where

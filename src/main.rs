@@ -1028,6 +1028,21 @@ impl SharedState {
     }
 }
 
+impl StatusSnapshot {
+    fn format_num(&self, num: u64) -> String {
+        if num >= 1_000_000_000_000 {
+            format!("{:.3}T", num as f64 / 1_000_000_000_000.0)
+        } else if num >= 1_000_000_000 {
+            format!("{:.3}B", num as f64 / 1_000_000_000.0)
+        } else if num >= 1_000_000 {
+            format!("{:.3}M", num as f64 / 1_000_000.0)
+        } else if num >= 1_000 {
+            format!("{:.3}K", num as f64 / 1_000.0)
+        } else {
+            num.to_string()
+        }
+    }
+}
 impl fmt::Display for StatusSnapshot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(lease) = &self.lease {
@@ -1043,8 +1058,8 @@ impl fmt::Display for StatusSnapshot {
                 if self.connected { "connected" } else { "" },
                 if self.received_welcome { "welcome" } else { "" },
                 self.rate / 1_000_000.0,
-                self.session_credited,
-                self.lifetime_shuffles,
+                self.format_num(self.session_credited),
+                self.format_num(self.lifetime_shuffles),
                 self.all_time_best,
                 lease.seed,
                 progress,
@@ -1064,7 +1079,7 @@ impl fmt::Display for StatusSnapshot {
                 if self.received_welcome { "welcome" } else { "" },
                 self.rate / 1_000_000.0,
                 self.session_credited,
-                self.lifetime_shuffles,
+                self.format_num(self.lifetime_shuffles),
                 self.all_time_best,
             )
         }
