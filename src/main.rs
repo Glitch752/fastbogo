@@ -251,11 +251,20 @@ enum ServerMessage {
     Unknown
 }
 
+fn check_avx2() -> bool {
+    #[cfg(target_arch = "x86_64")] {
+        is_x86_feature_detected!("avx2")
+    }
+    #[cfg(not(target_arch = "x86_64"))] {
+        false
+    }
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let use_avx2 = is_x86_feature_detected!("avx2") && !cli.force_scalar;
+    let use_avx2 = check_avx2() && !cli.force_scalar;
 
     if cli.print_sample {
         let sample = run_range(1_234_567_890_123_456_789, 0, 1_000, use_avx2);
@@ -854,7 +863,7 @@ fn run_benchmark_mode(cli: &Cli) -> Result<()> {
         DEFAULT_KERNEL_TUNING
     };
 
-    let is_avx2_available = is_x86_feature_detected!("avx2");
+    let is_avx2_available = check_avx2();
     let base_config = BenchmarkConfig {
         seed: cli.seed.unwrap_or(DEFAULT_OFFLINE_SEED),
         count: cli.count.unwrap_or(DEFAULT_OFFLINE_COUNT),

@@ -231,9 +231,11 @@ pub unsafe fn run_range_simd(seed: u64, lo: u64, hi: u64) -> RangeResult {
 #[cfg(test)]
 mod tests {
     use std::arch::x86_64::*;
+    #[cfg(target_feature = "avx2")]
     use crate::kernel_simd::fast_mod_avx2;
 
     #[test]
+    #[cfg(target_feature = "avx2")]
     fn simd_mod_const_works() {
         // test various inputs mod 5
         let inputs: [(u32, u32); _] = [

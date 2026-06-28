@@ -62,7 +62,11 @@ pub fn run_range(seed: u64, lo: u64, hi: u64, simd: bool) -> RangeResult {
 
 pub fn run_range_with_tuning(seed: u64, lo: u64, hi: u64, tuning: KernelTuning, simd: bool) -> RangeResult {
     if simd {
+        #[cfg(target_feature = "avx2")]
         unsafe { crate::kernel_simd::run_range_simd(seed, lo, hi) }
+        #[cfg(not(target_feature = "avx2"))] {
+            panic!("SIMD requested but not available on this target");
+        }
     } else {
         match tuning.prune_check_start.min(24) {
             1 => run_range_impl::<1>(seed, lo, hi),
