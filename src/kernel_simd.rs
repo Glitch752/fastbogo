@@ -2,7 +2,7 @@
 
 use std::arch::x86_64::*;
 use crate::kernel::{
-    INITIAL_ARR, RangeResult, SEED_STRIDE, THRESHOLD_2, THRESHOLD_3, THRESHOLD_4, THRESHOLD_5, THRESHOLD_6, THRESHOLD_7, THRESHOLD_8, THRESHOLD_9, THRESHOLD_10, THRESHOLD_11, THRESHOLD_12, THRESHOLD_13, THRESHOLD_14, THRESHOLD_15, THRESHOLD_16, THRESHOLD_17, THRESHOLD_18, THRESHOLD_19, THRESHOLD_20, THRESHOLD_21, THRESHOLD_22, THRESHOLD_23, THRESHOLD_24, THRESHOLD_25, materialize_arr, xseed,
+    INITIAL_ARR, RangeResult, SEED_STRIDE, materialize_arr, xseed,
 };
 
 #[repr(C, align(32))]
@@ -41,48 +41,47 @@ unsafe fn xnext8(rng: &mut Xoshiro8) -> __m256i {
     res
 }
 
-/// Vectorized rejection sampling and compile-time constant modulo using AVX2.
+/// computes `n % D` for 8 packed 32-bit integers since avx2 doesn't have a native modulo operation
+/// uses the algorithm found in "Division by Invariant Integers using Multiplication" by T. Granlund and P. L. Montgomery.
 #[inline(always)]
-unsafe fn xint8<const MAX: u32>(rng: &mut Xoshiro8, threshold: u32) -> __m256i {
-    let v_threshold = _mm256_set1_epi32(threshold as i32);
-    
-    // mask tracking which lanes still need a valid value (all 1s initially)
-    let mut active_mask = _mm256_set1_epi32(-1);
-    let mut results = _mm256_setzero_si256();
+pub unsafe fn fast_mod_avx2<const D: u32>(a: __m256i) -> __m256i 
+    where
+        [(); { crate::libdivide::magic_m::<{ D }>() } as usize]:,
+        [(); { crate::libdivide::magic_sh1::<{ D }>() } as usize]:,
+        [(); { crate::libdivide::magic_sh2::<{ D }>() } as usize]:
+{
+    let m1 = _mm256_set1_epi32(crate::libdivide::magic_m::<{ D }>());
+    let d1 = _mm256_set1_epi32(D as i32);
 
-    loop {
-        let values = xnext8(rng); 
+    // even
+    let t1 = _mm256_mul_epu32(a, m1);
+    let t2 = _mm256_srli_epi64::<32>(t1);
+    // odd
+    let t3 = _mm256_srli_epi64::<32>(a);
+    let t4 = _mm256_mul_epu32(t3, m1);
 
-        // unsigned values >= threshold
-        // avx2 doesn't have unsigned comparison operators, so we flip the msb to
-        // map it to the signed range. seems like this is the standard approach?
-        let sign_mask = _mm256_set1_epi32(i32::MIN);
-        let v_shifted = _mm256_xor_si256(values, sign_mask);
-        let t_shifted = _mm256_xor_si256(v_threshold, sign_mask);
-        
-        let passed_gt = _mm256_cmpgt_epi32(v_shifted, t_shifted);
-        let passed_eq = _mm256_cmpeq_epi32(values, v_threshold);
-        let ge_mask = _mm256_or_si256(passed_gt, passed_eq);
+    let mask = _mm256_set_epi32(-1, 0, -1, 0, -1, 0, -1, 0);
+    let t7 = _mm256_blendv_epi8(t2, t4, mask);
 
-        // lanes that just passed and still need their slot filled
-        let ready_mask = _mm256_and_si256(ge_mask, active_mask);
+    let t8 = _mm256_sub_epi32(a, t7);
+    let t9 = _mm256_srli_epi32::<{ crate::libdivide::magic_sh1::<{ D }>() }>(t8);
+    let t10 = _mm256_add_epi32(t7, t9);
+    let t11 = _mm256_srli_epi32::<{ crate::libdivide::magic_sh2::<{ D }>() }>(t10);
 
-        results = _mm256_blendv_epi8(results, values, ready_mask);
-        active_mask = _mm256_andnot_si256(ready_mask, active_mask);
+    let t12 = _mm256_mullo_epi32(t11, d1);
+    _mm256_sub_epi32(a, t12)
+}
 
-        // check if all 8 lanes are satisfied (active_mask is entirely 0)
-        if _mm256_testz_si256(active_mask, active_mask) == 1 {
-            break;
-        }
-    }
-
-    // avx2 doesn't have a modulo operation, so we fall back to scalar
-    let mut lanes = [0u32; 8];
-    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, results);
-    for lane in &mut lanes {
-        *lane %= MAX;
-    }
-    _mm256_loadu_si256(lanes.as_ptr() as *const __m256i)
+/// we explicitly don't do rejection sampling because the cold path is exceptionally rare
+/// (<1 in 10^9) and we're okay theoretically missing a few true positives since we filter
+/// later.
+#[inline(always)]
+unsafe fn xint8<const MAX: u32>(rng: &mut Xoshiro8) -> __m256i
+    where 
+        [(); { crate::libdivide::magic_m::<{ MAX }>() } as usize]:,
+        [(); { crate::libdivide::magic_sh1::<{ MAX }>() } as usize]:,
+        [(); { crate::libdivide::magic_sh2::<{ MAX }>() } as usize]: {
+    fast_mod_avx2::<MAX>(xnext8(rng))
 }
 
 #[inline(always)]
@@ -92,6 +91,7 @@ unsafe fn init_rng8(seed: u64, base_index: u64) -> Xoshiro8 {
     let mut s2 = [0u32; 8];
     let mut s3 = [0u32; 8];
 
+    // this is always faster in scalar, no matter how hard i try to vectorize it
     for i in 0..8 {
         let seed_i = seed.wrapping_add((base_index + i as u64).wrapping_mul(SEED_STRIDE));
 
@@ -111,56 +111,54 @@ unsafe fn init_rng8(seed: u64, base_index: u64) -> Xoshiro8 {
     }
 }
 
-/// SIMD scoring kernel: 8 candidates in lockstep
-#[inline(always)]
 unsafe fn score8(rng: &mut Xoshiro8) -> __m256i {
     let mut foreign_hits = _mm256_setzero_si256();
     let mut fixed = _mm256_setzero_si256();
     let ones = _mm256_set1_epi32(1);
+    let zeros = _mm256_setzero_si256();
 
     macro_rules! step {
-        ($idx:expr, $max:expr, $threshold:expr) => {{
-            let draw = xint8::<$max>(rng, $threshold);
+        ($idx:expr, $max:expr) => {{
+            let draw = xint8::<$max>(rng);
 
-            let idx = _mm256_set1_epi32($idx as i32);
+            let idx_bit = _mm256_set1_epi32(1i32 << $idx);
 
-            let idx_bit = _mm256_sllv_epi32(ones, idx);
-            let zero_mask = _mm256_cmpeq_epi32(_mm256_and_si256(foreign_hits, idx_bit), _mm256_setzero_si256());
+            let zero_mask = _mm256_cmpeq_epi32(_mm256_and_si256(foreign_hits, idx_bit), zeros);
             let fixed_if = _mm256_add_epi32(fixed, _mm256_and_si256(zero_mask, ones));
 
             let bit = _mm256_sllv_epi32(ones, draw);
             let foreign_hits_else = _mm256_or_si256(foreign_hits, bit);
 
-            let mask = _mm256_cmpeq_epi32(draw, idx); // draw == $idx
+            let mask = _mm256_cmpeq_epi32(draw, _mm256_set1_epi32($idx as i32)); // draw == $idx
             fixed = _mm256_blendv_epi8(fixed, fixed_if, mask);
             foreign_hits = _mm256_blendv_epi8(foreign_hits_else, foreign_hits, mask);
         }};
     }
 
-    step!(24, 25, THRESHOLD_25);
-    step!(23, 24, THRESHOLD_24);
-    step!(22, 23, THRESHOLD_23);
-    step!(21, 22, THRESHOLD_22);
-    step!(20, 21, THRESHOLD_21);
-    step!(19, 20, THRESHOLD_20);
-    step!(18, 19, THRESHOLD_19);
-    step!(17, 18, THRESHOLD_18);
-    step!(16, 17, THRESHOLD_17);
-    step!(15, 16, THRESHOLD_16);
-    step!(14, 15, THRESHOLD_15);
-    step!(13, 14, THRESHOLD_14);
-    step!(12, 13, THRESHOLD_13);
-    step!(11, 12, THRESHOLD_12);
-    step!(10, 11, THRESHOLD_11);
-    step!(9,  10, THRESHOLD_10);
-    step!(8,  9,  THRESHOLD_9);
-    step!(7,  8,  THRESHOLD_8);
-    step!(6,  7,  THRESHOLD_7);
-    step!(5,  6,  THRESHOLD_6);
-    step!(4,  5,  THRESHOLD_5);
-    step!(3,  4,  THRESHOLD_4);
-    step!(2,  3,  THRESHOLD_3);
-    step!(1,  2,  THRESHOLD_2);
+    step!(24, 25);
+    step!(23, 24);
+    step!(22, 23);
+    step!(21, 22);
+    step!(20, 21);
+    step!(19, 20);
+    step!(18, 19);
+    step!(17, 18);
+    step!(16, 17);
+    step!(15, 16);
+    step!(14, 15);
+    step!(13, 14);
+    step!(12, 13);
+    step!(11, 12);
+    step!(10, 11);
+    step!(9,  10);
+    step!(8,  9);
+    step!(7,  8);
+    step!(6,  7);
+    step!(5,  6);
+    step!(4,  5);
+    step!(3,  4);
+    step!(2,  3);
+    step!(1,  2);
 
     // fixed + ((foreign_hits & 1) == 0) as u8
     let mask = _mm256_and_si256(foreign_hits, ones);
@@ -179,7 +177,7 @@ pub unsafe fn run_range_simd(seed: u64, lo: u64, hi: u64) -> RangeResult {
         };
     }
 
-    let mut best_score: i32 = -1;
+    let mut best_score: u8 = 0;
     let mut best_index = lo;
 
     let mut i = lo;
@@ -192,9 +190,15 @@ pub unsafe fn run_range_simd(seed: u64, lo: u64, hi: u64) -> RangeResult {
         _mm256_storeu_si256(buf.as_mut_ptr() as *mut __m256i, scores);
 
         for lane in 0..8 {
-            if buf[lane] > best_score {
-                best_score = buf[lane];
-                best_index = i + lane as u64;
+            if buf[lane] as u8 > best_score {
+                // re-evaluate using scalar implementation because of rejection sampling
+                let arr = materialize_arr(seed, i + lane as u64);
+                let score = crate::kernel::count_fixed_points(&arr);
+
+                if score > best_score {
+                    best_score = score;
+                    best_index = i + lane as u64;
+                }
             }
         }
 
@@ -202,14 +206,12 @@ pub unsafe fn run_range_simd(seed: u64, lo: u64, hi: u64) -> RangeResult {
     }
 
     // tail (scalar fallback)
-    let mut best_score_u8 = best_score.max(0) as u8;
     while i < hi {
         let arr = materialize_arr(seed, i);
-
         let score = crate::kernel::count_fixed_points(&arr);
 
-        if score > best_score_u8 {
-            best_score_u8 = score;
+        if score > best_score {
+            best_score = score;
             best_index = i;
         }
 
@@ -219,8 +221,45 @@ pub unsafe fn run_range_simd(seed: u64, lo: u64, hi: u64) -> RangeResult {
     let best_arr = materialize_arr(seed, best_index);
 
     RangeResult {
-        best_score: best_score_u8,
+        best_score,
         best_arr,
         best_index,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::arch::x86_64::*;
+    use crate::kernel_simd::fast_mod_avx2;
+
+    #[test]
+    fn simd_mod_const_works() {
+        // test various inputs mod 5
+        let inputs: [(u32, u32); _] = [
+            (25, 0),
+            (24, 4),
+            (23, 3),
+            (22, 2),
+            (21, 1),
+            (101, 1)
+        ];
+        // scalar obvious
+        for (a, expected) in inputs {
+            assert_eq!(a % 5, expected);
+        }
+        // simd
+        for (a, expected) in inputs {
+            unsafe {
+                let avec = _mm256_set1_epi32(a as i32);
+                let expectedvec = _mm256_set1_epi32(expected as i32);
+                let result = fast_mod_avx2::<5>(avec);
+    
+                let mut resultarr = [0i32; 8];
+                _mm256_storeu_si256(resultarr.as_mut_ptr() as *mut __m256i, result);
+                let mut expectedarr = [expected as i32; 8];
+                _mm256_storeu_si256(expectedarr.as_mut_ptr() as *mut __m256i, expectedvec);
+                assert_eq!(resultarr, expectedarr);
+            }
+        }
     }
 }

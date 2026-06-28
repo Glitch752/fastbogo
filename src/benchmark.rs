@@ -14,6 +14,7 @@ pub struct BenchmarkConfig {
     pub warmup_rounds: usize,
     pub measure_rounds: usize,
     pub tuning: KernelTuning,
+    pub simd: bool
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -59,12 +60,12 @@ pub struct BenchmarkSweepSummary {
 pub fn run_kernel_benchmark(config: &BenchmarkConfig) -> BenchmarkSummary {
     let threads = config.threads.max(1);
     for _ in 0..config.warmup_rounds {
-        let _ = run_benchmark_round(config.seed, config.count, threads, config.tuning);
+        let _ = run_benchmark_round(config.seed, config.count, threads, config.tuning, config.simd);
     }
 
     let mut rounds = Vec::with_capacity(config.measure_rounds.max(1));
     for _ in 0..config.measure_rounds.max(1) {
-        rounds.push(run_benchmark_round(config.seed, config.count, threads, config.tuning));
+        rounds.push(run_benchmark_round(config.seed, config.count, threads, config.tuning, config.simd));
     }
 
     let mut rates = rounds
@@ -118,6 +119,7 @@ pub fn run_kernel_benchmark_sweep(
                 warmup_rounds: base.warmup_rounds,
                 measure_rounds: base.measure_rounds,
                 tuning: KernelTuning { prune_check_start },
+                simd: base.simd
             };
             cases.push(BenchmarkSweepCase {
                 threads: thread_count,
@@ -136,7 +138,7 @@ pub fn run_kernel_benchmark_sweep(
     }
 }
 
-fn run_benchmark_round(seed: u64, count: u64, threads: usize, tuning: KernelTuning) -> BenchmarkRound {
+fn run_benchmark_round(seed: u64, count: u64, threads: usize, tuning: KernelTuning, use_simd: bool) -> BenchmarkRound {
     let ready = Arc::new(Barrier::new(threads + 1));
     let go = Arc::new(AtomicBool::new(false));
 
@@ -153,7 +155,7 @@ fn run_benchmark_round(seed: u64, count: u64, threads: usize, tuning: KernelTuni
                 while !go.load(Ordering::Acquire) {
                     std::hint::spin_loop();
                 }
-                run_range_with_tuning(seed, lo, hi, tuning)
+                run_range_with_tuning(seed, lo, hi, tuning, use_simd)
             }));
         }
 

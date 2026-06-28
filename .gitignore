@@ -3,3 +3,4 @@
 /reference
 /scripts/deploy.sh
 kernel_tuning.json
+perf.data

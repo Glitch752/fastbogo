@@ -4,3 +4,4 @@
 pub mod benchmark;
 pub mod kernel;
 pub mod kernel_simd;
+pub(self) mod libdivide;

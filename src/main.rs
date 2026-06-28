@@ -48,6 +48,9 @@ struct Cli {
     #[arg(long, help = "Override worker thread count; defaults to logical core count")]
     threads: Option<usize>,
 
+    #[arg(long, help = "Force the scalar kernel to be used even if AVX2 is available")]
+    force_scalar: bool,
+
     #[arg(long, help = "Begin prune checks at this Fisher-Yates step. Usually 12-14.")]
     prune_check_start: Option<u8>,
 
@@ -76,7 +79,10 @@ struct Cli {
     benchmark_thread_sweep: Option<String>,
 
     #[arg(long, help = "Comma-separated prune-check starts to benchmark, e.g. 24,18,16,14,13,12")]
-    benchmark_prune_sweep: Option<String>
+    benchmark_prune_sweep: Option<String>,
+
+    #[arg(long, help = "Use SIMD instructions for the benchmark. Defaults to true if AVX2 is available.")]
+    benchmark_simd: Option<bool>
 }
 
 #[derive(Clone, Debug)]
@@ -249,8 +255,10 @@ enum ServerMessage {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    let use_avx2 = is_x86_feature_detected!("avx2") && !cli.force_scalar;
+
     if cli.print_sample {
-        let sample = run_range(1_234_567_890_123_456_789, 0, 1_000);
+        let sample = run_range(1_234_567_890_123_456_789, 0, 1_000, use_avx2);
         println!("{}", serde_json::to_string_pretty(&SampleOutput::from(&sample))?);
         return Ok(());
     }
@@ -288,6 +296,7 @@ async fn main() -> Result<()> {
                 .or_else(|| saved_tuning.map(|t| t.prune_check_start))
                 .unwrap_or(DEFAULT_KERNEL_TUNING.prune_check_start)
         },
+        use_avx2
     );
     let status_handle = spawn_status_reporter(Arc::clone(&state));
     let control_handle = spawn_version_poller(client.clone(), cli.base_url.clone());
@@ -670,6 +679,7 @@ impl WorkerPool {
         workers: usize,
         progress_tx: mpsc::UnboundedSender<WorkerProgress>,
         tuning: KernelTuning,
+        use_simd: bool
     ) -> Self {
         let cores = core_affinity::get_core_ids().unwrap();
         // Wrapping allocation of workers to cores (e.g. for 2 cores and 4 workers: 0, 1, 0, 1)
@@ -683,7 +693,7 @@ impl WorkerPool {
             let thread_tx = progress_tx.clone();
             let handle = thread::spawn(move || {
                 core_affinity::set_for_current(core_id);
-                worker_loop(thread_control, thread_tx, tuning)
+                worker_loop(thread_control, thread_tx, tuning, use_simd)
             });
             controls.push(control);
             handles.push(handle);
@@ -771,6 +781,7 @@ fn worker_loop(
     control: Arc<WorkerControl>,
     progress_tx: mpsc::UnboundedSender<WorkerProgress>,
     fallback_tuning: KernelTuning,
+    use_simd: bool
 ) {
     let mut generation = 0;
     while let Some((new_generation, assignment)) = control.wait_for_assignment(generation) {
@@ -794,6 +805,7 @@ fn worker_loop(
                 } else {
                     tuning
                 },
+                use_simd
             );
             pending_done = pending_done.saturating_add(hi - cur);
             merge_best(
@@ -842,6 +854,7 @@ fn run_benchmark_mode(cli: &Cli) -> Result<()> {
         DEFAULT_KERNEL_TUNING
     };
 
+    let is_avx2_available = is_x86_feature_detected!("avx2");
     let base_config = BenchmarkConfig {
         seed: cli.seed.unwrap_or(DEFAULT_OFFLINE_SEED),
         count: cli.count.unwrap_or(DEFAULT_OFFLINE_COUNT),
@@ -849,6 +862,7 @@ fn run_benchmark_mode(cli: &Cli) -> Result<()> {
         warmup_rounds: cli.benchmark_warmup_rounds,
         measure_rounds: cli.benchmark_rounds,
         tuning: kernel_tuning,
+        simd: cli.benchmark_simd.unwrap_or(is_avx2_available),
     };
 
     let thread_sweep = parse_number_list::<usize>(cli.benchmark_thread_sweep.as_deref())?;

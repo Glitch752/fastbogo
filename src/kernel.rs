@@ -55,40 +55,41 @@ const fn threshold(max: u32) -> u32 {
 }
 
 #[inline(always)]
-pub fn run_range(seed: u64, lo: u64, hi: u64) -> RangeResult {
-    // TODO: check support or something something blah blah
-    // also add a cli parameter
-    
-    // run_range_with_tuning(seed, lo, hi, DEFAULT_KERNEL_TUNING)
-    unsafe { crate::kernel_simd::run_range_simd(seed, lo, hi) }
+pub fn run_range(seed: u64, lo: u64, hi: u64, simd: bool) -> RangeResult {
+    run_range_with_tuning(seed, lo, hi, DEFAULT_KERNEL_TUNING, simd)
+
 }
 
-pub fn run_range_with_tuning(seed: u64, lo: u64, hi: u64, tuning: KernelTuning) -> RangeResult {
-    match tuning.prune_check_start.min(24) {
-        1 => run_range_impl::<1>(seed, lo, hi),
-        2 => run_range_impl::<2>(seed, lo, hi),
-        3 => run_range_impl::<3>(seed, lo, hi),
-        4 => run_range_impl::<4>(seed, lo, hi),
-        5 => run_range_impl::<5>(seed, lo, hi),
-        6 => run_range_impl::<6>(seed, lo, hi),
-        7 => run_range_impl::<7>(seed, lo, hi),
-        8 => run_range_impl::<8>(seed, lo, hi),
-        9 => run_range_impl::<9>(seed, lo, hi),
-        10 => run_range_impl::<10>(seed, lo, hi),
-        11 => run_range_impl::<11>(seed, lo, hi),
-        12 => run_range_impl::<12>(seed, lo, hi),
-        13 => run_range_impl::<13>(seed, lo, hi),
-        14 => run_range_impl::<14>(seed, lo, hi),
-        15 => run_range_impl::<15>(seed, lo, hi),
-        16 => run_range_impl::<16>(seed, lo, hi),
-        17 => run_range_impl::<17>(seed, lo, hi),
-        18 => run_range_impl::<18>(seed, lo, hi),
-        19 => run_range_impl::<19>(seed, lo, hi),
-        20 => run_range_impl::<20>(seed, lo, hi),
-        21 => run_range_impl::<21>(seed, lo, hi),
-        22 => run_range_impl::<22>(seed, lo, hi),
-        23 => run_range_impl::<23>(seed, lo, hi),
-        _ => run_range_impl::<24>(seed, lo, hi),
+pub fn run_range_with_tuning(seed: u64, lo: u64, hi: u64, tuning: KernelTuning, simd: bool) -> RangeResult {
+    if simd {
+        unsafe { crate::kernel_simd::run_range_simd(seed, lo, hi) }
+    } else {
+        match tuning.prune_check_start.min(24) {
+            1 => run_range_impl::<1>(seed, lo, hi),
+            2 => run_range_impl::<2>(seed, lo, hi),
+            3 => run_range_impl::<3>(seed, lo, hi),
+            4 => run_range_impl::<4>(seed, lo, hi),
+            5 => run_range_impl::<5>(seed, lo, hi),
+            6 => run_range_impl::<6>(seed, lo, hi),
+            7 => run_range_impl::<7>(seed, lo, hi),
+            8 => run_range_impl::<8>(seed, lo, hi),
+            9 => run_range_impl::<9>(seed, lo, hi),
+            10 => run_range_impl::<10>(seed, lo, hi),
+            11 => run_range_impl::<11>(seed, lo, hi),
+            12 => run_range_impl::<12>(seed, lo, hi),
+            13 => run_range_impl::<13>(seed, lo, hi),
+            14 => run_range_impl::<14>(seed, lo, hi),
+            15 => run_range_impl::<15>(seed, lo, hi),
+            16 => run_range_impl::<16>(seed, lo, hi),
+            17 => run_range_impl::<17>(seed, lo, hi),
+            18 => run_range_impl::<18>(seed, lo, hi),
+            19 => run_range_impl::<19>(seed, lo, hi),
+            20 => run_range_impl::<20>(seed, lo, hi),
+            21 => run_range_impl::<21>(seed, lo, hi),
+            22 => run_range_impl::<22>(seed, lo, hi),
+            23 => run_range_impl::<23>(seed, lo, hi),
+            _ => run_range_impl::<24>(seed, lo, hi),
+        }
     }
 }
 
@@ -344,7 +345,7 @@ mod tests {
 
     #[test]
     fn sample_kernel_matches_known_output() {
-        let result = run_range(1_234_567_890_123_456_789, 0, 1_000);
+        let result = run_range(1_234_567_890_123_456_789, 0, 1_000, true);
         assert_eq!(result.best_score, 6);
         assert_eq!(result.best_index, 866);
         assert_eq!(
@@ -370,9 +371,9 @@ mod tests {
     #[test]
     fn tuning_variants_preserve_output() {
         let seed = 1_234_567_890_123_456_789u64;
-        let baseline = run_range_with_tuning(seed, 0, 50_000, KernelTuning { prune_check_start: 24 });
+        let baseline = run_range_with_tuning(seed, 0, 50_000, KernelTuning { prune_check_start: 24 }, false);
         for prune_check_start in [24, 18, 16, 14, 13, 12, 10, 8, 1] {
-            let tuned = run_range_with_tuning(seed, 0, 50_000, KernelTuning { prune_check_start });
+            let tuned = run_range_with_tuning(seed, 0, 50_000, KernelTuning { prune_check_start }, false);
             assert_eq!(tuned.best_score, baseline.best_score, "start={prune_check_start}");
             assert_eq!(tuned.best_index, baseline.best_index, "start={prune_check_start}");
             assert_eq!(tuned.best_arr, baseline.best_arr, "start={prune_check_start}");
@@ -397,7 +398,7 @@ mod tests {
         let js_result: serde_json::Value = serde_json::from_slice(&js_output.stdout).unwrap();
 
         // Compare the results with our implementation
-        let our_result = run_range(seed, 0, iterations);
+        let our_result = run_range(seed, 0, iterations, true);
 
         assert_eq!(our_result.best_score, js_result["best"].as_u64().unwrap() as u8);
         assert_eq!(our_result.best_index, js_result["bestIndex"].as_u64().unwrap() as u64);
